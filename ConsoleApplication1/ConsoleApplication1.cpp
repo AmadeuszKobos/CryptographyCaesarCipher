@@ -2,7 +2,7 @@
 #include <fstream>
 #include <string>
 #include <sstream>
-#include <windows.h>    // QueryPerformanceCounter, SetConsoleCP, SetConsoleOutputCP, CreateDirectory
+#include <windows.h>    // QueryPerformanceCounter, SetConsoleCP, SetConsoleOutputCP, _mkdir
 #include <thread>
 #include <vector>
 #include <direct.h>     // _mkdir
@@ -26,6 +26,8 @@ int keywordShift(char k) {
     else if (isUpperLatin(k)) return k - 'A';
     else                      return 0; // jeśli znak nie jest literą, traktujemy jako 0
 }
+
+// ---------------- Sekwencyjne wersje ----------------
 
 // Sekwencyjna wersja encrypt
 void encrypt_seq(const string& plaintext, string& out, int key, const string& keyword) {
@@ -81,7 +83,9 @@ void decrypt_seq(const string& ciphertext, string& out, int key, const string& k
     }
 }
 
-// Wątkowa wersja encrypt
+// ---------------- Wątkowe wersje z parametrem ilości wątków ----------------
+
+// Część pracy dla pojedynczego wątku (encrypt)
 void encrypt_part(const string& plaintext, string& out, int key, const string& keyword, size_t start, size_t end) {
     size_t kwLen = keyword.size();
     for (size_t i = start; i < end; ++i) {
@@ -106,6 +110,7 @@ void encrypt_part(const string& plaintext, string& out, int key, const string& k
     }
 }
 
+// Część pracy dla pojedynczego wątku (decrypt)
 void decrypt_part(const string& ciphertext, string& out, int key, const string& keyword, size_t start, size_t end) {
     size_t kwLen = keyword.size();
     for (size_t i = start; i < end; ++i) {
@@ -130,11 +135,11 @@ void decrypt_part(const string& ciphertext, string& out, int key, const string& 
     }
 }
 
-void encrypt_threaded(const string& plaintext, string& out, int key, const string& keyword) {
+// Wątkowa wersja encrypt z ustawioną liczbą wątków
+void encrypt_threaded(const string& plaintext, string& out, int key, const string& keyword, unsigned int num_threads) {
     size_t N = plaintext.size();
     out.resize(N);
-    unsigned int num_threads = thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 2;
+    if (num_threads == 0) num_threads = 1;
     vector<thread> threads;
     size_t chunk = N / num_threads;
     for (unsigned int t = 0; t < num_threads; ++t) {
@@ -147,11 +152,11 @@ void encrypt_threaded(const string& plaintext, string& out, int key, const strin
     }
 }
 
-void decrypt_threaded(const string& ciphertext, string& out, int key, const string& keyword) {
+// Wątkowa wersja decrypt z ustawioną liczbą wątków
+void decrypt_threaded(const string& ciphertext, string& out, int key, const string& keyword, unsigned int num_threads) {
     size_t N = ciphertext.size();
     out.resize(N);
-    unsigned int num_threads = thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 2;
+    if (num_threads == 0) num_threads = 1;
     vector<thread> threads;
     size_t chunk = N / num_threads;
     for (unsigned int t = 0; t < num_threads; ++t) {
@@ -164,8 +169,11 @@ void decrypt_threaded(const string& ciphertext, string& out, int key, const stri
     }
 }
 
-// OpenMP wersja encrypt
-void encrypt_openmp(const string& plaintext, string& out, int key, const string& keyword) {
+// ---------------- OpenMP wersje ----------------
+
+// OpenMP wersja encrypt (ustawiana liczba wątków)
+void encrypt_openmp(const string& plaintext, string& out, int key, const string& keyword, int omp_threads) {
+    omp_set_num_threads(omp_threads);
     size_t kwLen = keyword.size();
     size_t N = plaintext.size();
     out.resize(N);
@@ -192,8 +200,9 @@ void encrypt_openmp(const string& plaintext, string& out, int key, const string&
     }
 }
 
-// OpenMP wersja decrypt
-void decrypt_openmp(const string& ciphertext, string& out, int key, const string& keyword) {
+// OpenMP wersja decrypt (ustawiana liczba wątków)
+void decrypt_openmp(const string& ciphertext, string& out, int key, const string& keyword, int omp_threads) {
+    omp_set_num_threads(omp_threads);
     size_t kwLen = keyword.size();
     size_t N = ciphertext.size();
     out.resize(N);
@@ -266,6 +275,23 @@ int main() {
         return 1;
     }
 
+    // Zapytanie o liczbę wątków dla wersji std::thread i OpenMP
+    cout << "Podaj liczbe watkow dla wersji std::thread (np. 4): ";
+    unsigned int num_threads;
+    cin >> num_threads;
+    if (num_threads == 0) {
+        cerr << "Liczba watkow musi byc wieksza od 0.\n";
+        return 1;
+    }
+
+    cout << "Podaj liczbe watkow dla wersji OpenMP (np. 4): ";
+    int omp_threads;
+    cin >> omp_threads;
+    if (omp_threads <= 0) {
+        cerr << "Liczba watkow (OpenMP) musi byc wieksza od 0.\n";
+        return 1;
+    }
+
     // Ścieżki do folderów wynikowych (tworzymy, jeśli ich nie ma)
     _mkdir("text_files/result_seq");
     _mkdir("text_files/result_thread");
@@ -319,16 +345,16 @@ int main() {
     // ---------------------- STD::THREAD ----------------------
     if (mode == 1) {
         QueryPerformanceCounter(&start);
-        encrypt_threaded(content, out_thread, key, keyword);
+        encrypt_threaded(content, out_thread, key, keyword, num_threads);
         QueryPerformanceCounter(&end);
     }
     else {
         QueryPerformanceCounter(&start);
-        decrypt_threaded(content, out_thread, key, keyword);
+        decrypt_threaded(content, out_thread, key, keyword, num_threads);
         QueryPerformanceCounter(&end);
     }
     double time_thread = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-    cout << "Czas (std::thread): " << time_thread << " ms\n";
+    cout << "Czas (std::thread, wątki=" << num_threads << "): " << time_thread << " ms\n";
 
     // Zapis threaded
     string out_thread_path = "text_files/result_thread/" + input_filename + "_thread.txt";
@@ -343,16 +369,16 @@ int main() {
     // ---------------------- OpenMP ----------------------
     if (mode == 1) {
         QueryPerformanceCounter(&start);
-        encrypt_openmp(content, out_openmp, key, keyword);
+        encrypt_openmp(content, out_openmp, key, keyword, omp_threads);
         QueryPerformanceCounter(&end);
     }
     else {
         QueryPerformanceCounter(&start);
-        decrypt_openmp(content, out_openmp, key, keyword);
+        decrypt_openmp(content, out_openmp, key, keyword, omp_threads);
         QueryPerformanceCounter(&end);
     }
     double time_openmp = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-    cout << "Czas (OpenMP): " << time_openmp << " ms\n\n";
+    cout << "Czas (OpenMP, wątki=" << omp_threads << "): " << time_openmp << " ms\n\n";
 
     // Zapis OpenMP
     string out_openmp_path = "text_files/result_openmp/" + input_filename + "_openmp.txt";
