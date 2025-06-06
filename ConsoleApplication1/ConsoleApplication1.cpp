@@ -2,7 +2,11 @@
 #include <fstream>
 #include <string>
 #include <sstream>
-#include <windows.h> 
+#include <windows.h>    // QueryPerformanceCounter, SetConsoleCP, SetConsoleOutputCP, CreateDirectory
+#include <thread>
+#include <vector>
+#include <direct.h>     // _mkdir
+#include <omp.h>        // OpenMP
 
 using namespace std;
 
@@ -23,72 +27,204 @@ int keywordShift(char k) {
     else                      return 0; // jeśli znak nie jest literą, traktujemy jako 0
 }
 
-// Funkcja szyfrująca:
-// Dla każdego znaku: sumujemy trzy składowe przesunięcia:
-//   1) stały klucz (key)
-//   2) indeks znaku w tekście (i)
-//   3) przesunięcie wynikające z odpowiedniego znaku ze słowa kluczowego (keyword)
-string encrypt(const string& plaintext, int key, const string& keyword) {
-    string cipher = plaintext;
+// Sekwencyjna wersja encrypt
+void encrypt_seq(const string& plaintext, string& out, int key, const string& keyword) {
     size_t kwLen = keyword.size();
-    for (size_t i = 0; i < plaintext.size(); ++i) {
+    size_t N = plaintext.size();
+    out.resize(N);
+    for (size_t i = 0; i < N; ++i) {
         char c = plaintext[i];
         int kwShift = keywordShift(keyword[i % kwLen]);
         int totalShift = (key + static_cast<int>(i) + kwShift) % 26;
-
         if (isLowerLatin(c)) {
             int base = 'a';
             int orig = c - base;
             int enc = (orig + totalShift) % 26;
-            cipher[i] = static_cast<char>(base + enc);
+            out[i] = static_cast<char>(base + enc);
         }
         else if (isUpperLatin(c)) {
             int base = 'A';
             int orig = c - base;
             int enc = (orig + totalShift) % 26;
-            cipher[i] = static_cast<char>(base + enc);
+            out[i] = static_cast<char>(base + enc);
         }
         else {
-            // Pozostałe znaki (spacje, cyfry, znaki diakrytyczne) zostają bez zmian
-            cipher[i] = c;
+            out[i] = c;
         }
     }
-    return cipher;
 }
 
-// Funkcja deszyfrująca:
-// Dla każdego znaku: odejmujemy sumę trzech składowych przesunięcia:
-//   1) stały klucz (key)
-//   2) indeks znaku w tekście (i)
-//   3) przesunięcie wynikające ze słowa kluczowego (keyword)
-string decrypt(const string& ciphertext, int key, const string& keyword) {
-    string plain = ciphertext;
+// Sekwencyjna wersja decrypt
+void decrypt_seq(const string& ciphertext, string& out, int key, const string& keyword) {
     size_t kwLen = keyword.size();
-    for (size_t i = 0; i < ciphertext.size(); ++i) {
+    size_t N = ciphertext.size();
+    out.resize(N);
+    for (size_t i = 0; i < N; ++i) {
         char c = ciphertext[i];
         int kwShift = keywordShift(keyword[i % kwLen]);
         int totalShift = (key + static_cast<int>(i) + kwShift) % 26;
-
         if (isLowerLatin(c)) {
             int base = 'a';
             int orig = c - base;
             int dec = (orig - totalShift + 26) % 26;
-            plain[i] = static_cast<char>(base + dec);
+            out[i] = static_cast<char>(base + dec);
         }
         else if (isUpperLatin(c)) {
             int base = 'A';
             int orig = c - base;
             int dec = (orig - totalShift + 26) % 26;
-            plain[i] = static_cast<char>(base + dec);
+            out[i] = static_cast<char>(base + dec);
         }
         else {
-            plain[i] = c;
+            out[i] = c;
         }
     }
-    return plain;
+}
+
+// Wątkowa wersja encrypt
+void encrypt_part(const string& plaintext, string& out, int key, const string& keyword, size_t start, size_t end) {
+    size_t kwLen = keyword.size();
+    for (size_t i = start; i < end; ++i) {
+        char c = plaintext[i];
+        int kwShift = keywordShift(keyword[i % kwLen]);
+        int totalShift = (key + static_cast<int>(i) + kwShift) % 26;
+        if (isLowerLatin(c)) {
+            int base = 'a';
+            int orig = c - base;
+            int enc = (orig + totalShift) % 26;
+            out[i] = static_cast<char>(base + enc);
+        }
+        else if (isUpperLatin(c)) {
+            int base = 'A';
+            int orig = c - base;
+            int enc = (orig + totalShift) % 26;
+            out[i] = static_cast<char>(base + enc);
+        }
+        else {
+            out[i] = c;
+        }
+    }
+}
+
+void decrypt_part(const string& ciphertext, string& out, int key, const string& keyword, size_t start, size_t end) {
+    size_t kwLen = keyword.size();
+    for (size_t i = start; i < end; ++i) {
+        char c = ciphertext[i];
+        int kwShift = keywordShift(keyword[i % kwLen]);
+        int totalShift = (key + static_cast<int>(i) + kwShift) % 26;
+        if (isLowerLatin(c)) {
+            int base = 'a';
+            int orig = c - base;
+            int dec = (orig - totalShift + 26) % 26;
+            out[i] = static_cast<char>(base + dec);
+        }
+        else if (isUpperLatin(c)) {
+            int base = 'A';
+            int orig = c - base;
+            int dec = (orig - totalShift + 26) % 26;
+            out[i] = static_cast<char>(base + dec);
+        }
+        else {
+            out[i] = c;
+        }
+    }
+}
+
+void encrypt_threaded(const string& plaintext, string& out, int key, const string& keyword) {
+    size_t N = plaintext.size();
+    out.resize(N);
+    unsigned int num_threads = thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 2;
+    vector<thread> threads;
+    size_t chunk = N / num_threads;
+    for (unsigned int t = 0; t < num_threads; ++t) {
+        size_t start = t * chunk;
+        size_t end = (t == num_threads - 1) ? N : (start + chunk);
+        threads.emplace_back(encrypt_part, cref(plaintext), ref(out), key, cref(keyword), start, end);
+    }
+    for (auto& th : threads) {
+        th.join();
+    }
+}
+
+void decrypt_threaded(const string& ciphertext, string& out, int key, const string& keyword) {
+    size_t N = ciphertext.size();
+    out.resize(N);
+    unsigned int num_threads = thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 2;
+    vector<thread> threads;
+    size_t chunk = N / num_threads;
+    for (unsigned int t = 0; t < num_threads; ++t) {
+        size_t start = t * chunk;
+        size_t end = (t == num_threads - 1) ? N : (start + chunk);
+        threads.emplace_back(decrypt_part, cref(ciphertext), ref(out), key, cref(keyword), start, end);
+    }
+    for (auto& th : threads) {
+        th.join();
+    }
+}
+
+// OpenMP wersja encrypt
+void encrypt_openmp(const string& plaintext, string& out, int key, const string& keyword) {
+    size_t kwLen = keyword.size();
+    size_t N = plaintext.size();
+    out.resize(N);
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < static_cast<int>(N); ++i) {
+        char c = plaintext[i];
+        int kwShift = keywordShift(keyword[i % kwLen]);
+        int totalShift = (key + i + kwShift) % 26;
+        if (isLowerLatin(c)) {
+            int base = 'a';
+            int orig = c - base;
+            int enc = (orig + totalShift) % 26;
+            out[i] = static_cast<char>(base + enc);
+        }
+        else if (isUpperLatin(c)) {
+            int base = 'A';
+            int orig = c - base;
+            int enc = (orig + totalShift) % 26;
+            out[i] = static_cast<char>(base + enc);
+        }
+        else {
+            out[i] = c;
+        }
+    }
+}
+
+// OpenMP wersja decrypt
+void decrypt_openmp(const string& ciphertext, string& out, int key, const string& keyword) {
+    size_t kwLen = keyword.size();
+    size_t N = ciphertext.size();
+    out.resize(N);
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < static_cast<int>(N); ++i) {
+        char c = ciphertext[i];
+        int kwShift = keywordShift(keyword[i % kwLen]);
+        int totalShift = (key + i + kwShift) % 26;
+        if (isLowerLatin(c)) {
+            int base = 'a';
+            int orig = c - base;
+            int dec = (orig - totalShift + 26) % 26;
+            out[i] = static_cast<char>(base + dec);
+        }
+        else if (isUpperLatin(c)) {
+            int base = 'A';
+            int orig = c - base;
+            int dec = (orig - totalShift + 26) % 26;
+            out[i] = static_cast<char>(base + dec);
+        }
+        else {
+            out[i] = c;
+        }
+    }
 }
 
 int main() {
+    // Ustawienie polskiej strony kodowej w konsoli
+    SetConsoleCP(1250);
+    SetConsoleOutputCP(1250);
+
     // Uzyskanie częstotliwości licznika wysokiej rozdzielczości
     LARGE_INTEGER freq;
     if (!QueryPerformanceFrequency(&freq)) {
@@ -96,7 +232,7 @@ int main() {
         return 1;
     }
 
-    cout << "=== Autorski szyfr: przesuniecie + slowo kluczowe (wersja sekwencyjna) ===\n\n";
+    cout << "=== Autorski szyfr: przesuniecie + slowo kluczowe (zrównoleglenie) ===\n\n";
     cout << "Wybierz tryb działania:\n";
     cout << "  1 - Szyfruj tekst\n";
     cout << "  2 - Deszyfruj tekst\n";
@@ -122,7 +258,7 @@ int main() {
         return 1;
     }
 
-    cout << "Podaj nazwe pliku wejsciowego (tekst do przetworzenia): ";
+    cout << "Podaj nazwe pliku wejsciowego (tekst do przetworzenia, bez rozszerzenia): ";
     string input_filename;
     cin >> input_filename;
     if (input_filename.empty()) {
@@ -130,10 +266,15 @@ int main() {
         return 1;
     }
 
-    // Budowanie pełnych ścieżek plików
-    string input_file_path = "text_files/" + input_filename + ".txt";
-    string output_file_path = "text_files/" + input_filename + "_result.txt";
+    // Ścieżki do folderów wynikowych (tworzymy, jeśli ich nie ma)
+    _mkdir("text_files/result_seq");
+    _mkdir("text_files/result_thread");
+    _mkdir("text_files/result_openmp");
 
+    // Ścieżka pliku wejściowego
+    string input_file_path = "text_files/" + input_filename + ".txt";
+
+    // Wczytanie pliku wejściowego
     ifstream infile(input_file_path, ios::in | ios::binary);
     if (!infile) {
         cerr << "Nie mozna otworzyc pliku wejsciowego: " << input_file_path << "\n";
@@ -146,38 +287,84 @@ int main() {
         content = oss.str();
     }
     infile.close();
-    SetConsoleCP(1250);
-    SetConsoleOutputCP(1250);
-    // Pomiar czasu szyfrowania lub deszyfrowania
+
+    // Bufory wyjściowe
+    string out_seq, out_thread, out_openmp;
+
+    // ---------------------- SEKWENCYJNE ----------------------
     LARGE_INTEGER start, end;
-    string result;
     if (mode == 1) {
         QueryPerformanceCounter(&start);
-        result = encrypt(content, key, keyword);
+        encrypt_seq(content, out_seq, key, keyword);
         QueryPerformanceCounter(&end);
-
-        double elapsedMs = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        cout << "\nCzas szyfrowania: " << elapsedMs << " ms\n";
-        cout << "Tekst zostal zaszyfrowany. Zapis do: " << output_file_path << "\n";
     }
     else {
         QueryPerformanceCounter(&start);
-        result = decrypt(content, key, keyword);
+        decrypt_seq(content, out_seq, key, keyword);
         QueryPerformanceCounter(&end);
-
-        double elapsedMs = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        cout << "\nCzas deszyfrowania: " << elapsedMs << " ms\n";
-        cout << "Tekst zostal odszyfrowany. Zapis do: " << output_file_path << "\n";
     }
+    double time_seq = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+    cout << "\nCzas (sekwencyjnie): " << time_seq << " ms\n";
 
-    ofstream outfile(output_file_path, ios::out | ios::binary);
-    if (!outfile) {
-        cerr << "Nie mozna otworzyc pliku wyjsciowego: " << output_file_path << "\n";
+    // Zapis sekwencyjny
+    string out_seq_path = "text_files/result_seq/" + input_filename + "_seq.txt";
+    ofstream ofs_seq(out_seq_path, ios::out | ios::binary);
+    if (!ofs_seq) {
+        cerr << "Nie mozna otworzyc pliku wyjsciowego: " << out_seq_path << "\n";
         return 1;
     }
-    outfile << result;
-    outfile.close();
+    ofs_seq << out_seq;
+    ofs_seq.close();
 
+    // ---------------------- STD::THREAD ----------------------
+    if (mode == 1) {
+        QueryPerformanceCounter(&start);
+        encrypt_threaded(content, out_thread, key, keyword);
+        QueryPerformanceCounter(&end);
+    }
+    else {
+        QueryPerformanceCounter(&start);
+        decrypt_threaded(content, out_thread, key, keyword);
+        QueryPerformanceCounter(&end);
+    }
+    double time_thread = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+    cout << "Czas (std::thread): " << time_thread << " ms\n";
+
+    // Zapis threaded
+    string out_thread_path = "text_files/result_thread/" + input_filename + "_thread.txt";
+    ofstream ofs_thread(out_thread_path, ios::out | ios::binary);
+    if (!ofs_thread) {
+        cerr << "Nie mozna otworzyc pliku wyjsciowego: " << out_thread_path << "\n";
+        return 1;
+    }
+    ofs_thread << out_thread;
+    ofs_thread.close();
+
+    // ---------------------- OpenMP ----------------------
+    if (mode == 1) {
+        QueryPerformanceCounter(&start);
+        encrypt_openmp(content, out_openmp, key, keyword);
+        QueryPerformanceCounter(&end);
+    }
+    else {
+        QueryPerformanceCounter(&start);
+        decrypt_openmp(content, out_openmp, key, keyword);
+        QueryPerformanceCounter(&end);
+    }
+    double time_openmp = (end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+    cout << "Czas (OpenMP): " << time_openmp << " ms\n\n";
+
+    // Zapis OpenMP
+    string out_openmp_path = "text_files/result_openmp/" + input_filename + "_openmp.txt";
+    ofstream ofs_openmp(out_openmp_path, ios::out | ios::binary);
+    if (!ofs_openmp) {
+        cerr << "Nie mozna otworzyc pliku wyjsciowego: " << out_openmp_path << "\n";
+        return 1;
+    }
+    ofs_openmp << out_openmp;
+    ofs_openmp.close();
+
+    cout << "Wyniki zapisane w podfolderach result_seq, result_thread, result_openmp.\n";
     cout << "Gotowe.\n";
     return 0;
 }
